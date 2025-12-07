@@ -19,13 +19,19 @@
 """
 Modules to compute the matching cost and solve the corresponding LSAP.
 """
+
 import numpy as np
 import torch
 from scipy.optimize import linear_sum_assignment
 from torch import nn
 import torch.nn.functional as F
 
-from rfdetr.util.box_ops import box_cxcywh_to_xyxy, generalized_box_iou, batch_sigmoid_ce_loss, batch_dice_loss
+from rfdetr.util.box_ops import (
+    box_cxcywh_to_xyxy,
+    generalized_box_iou,
+    batch_sigmoid_ce_loss,
+    batch_dice_loss,
+)
 from rfdetr.models.segmentation_head import point_sample
 
 
@@ -36,8 +42,18 @@ class HungarianMatcher(nn.Module):
     while the others are un-matched (and thus treated as non-objects).
     """
 
-    def __init__(self, cost_class: float = 1, cost_bbox: float = 1, cost_giou: float = 1, focal_alpha: float = 0.25, use_pos_only: bool = False,
-                 use_position_modulated_cost: bool = False, mask_point_sample_ratio: int = 16, cost_mask_ce: float = 1, cost_mask_dice: float = 1):
+    def __init__(
+        self,
+        cost_class: float = 1,
+        cost_bbox: float = 1,
+        cost_giou: float = 1,
+        focal_alpha: float = 0.25,
+        use_pos_only: bool = False,
+        use_position_modulated_cost: bool = False,
+        mask_point_sample_ratio: int = 16,
+        cost_mask_ce: float = 1,
+        cost_mask_dice: float = 1,
+    ):
         """Creates the matcher
         Params:
             cost_class: This is the relative weight of the classification error in the matching cost
@@ -48,7 +64,9 @@ class HungarianMatcher(nn.Module):
         self.cost_class = cost_class
         self.cost_bbox = cost_bbox
         self.cost_giou = cost_giou
-        assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs cant be 0"
+        assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, (
+            "all costs cant be 0"
+        )
         self.focal_alpha = focal_alpha
         self.mask_point_sample_ratio = mask_point_sample_ratio
         self.cost_mask_ce = cost_mask_ce
@@ -56,7 +74,7 @@ class HungarianMatcher(nn.Module):
 
     @torch.no_grad()
     def forward(self, outputs, targets, group_detr=1):
-        """ Performs the matching
+        """Performs the matching
         Params:
             outputs: This is a dict that contains at least these entries:
                  "pred_logits": Tensor of dim [batch_size, num_queries, num_classes] with the classification logits
@@ -92,18 +110,38 @@ class HungarianMatcher(nn.Module):
             out_masks = outputs["pred_masks"].flatten(0, 1)
 
         # Compute the giou cost betwen boxes
-        giou = generalized_box_iou(box_cxcywh_to_xyxy(out_bbox), box_cxcywh_to_xyxy(tgt_bbox))
+        giou = generalized_box_iou(
+            box_cxcywh_to_xyxy(out_bbox), box_cxcywh_to_xyxy(tgt_bbox)
+        )
         cost_giou = -giou
 
         # Compute the classification cost.
         alpha = 0.25
         gamma = 2.0
-        
+
         # neg_cost_class = (1 - alpha) * (out_prob ** gamma) * (-(1 - out_prob + 1e-8).log())
         # pos_cost_class = alpha * ((1 - out_prob) ** gamma) * (-(out_prob + 1e-8).log())
         # we refactor these with logsigmoid for numerical stability
-        neg_cost_class = (1 - alpha) * (out_prob ** gamma) * (-F.logsigmoid(-flat_pred_logits))
-        pos_cost_class = alpha * ((1 - out_prob) ** gamma) * (-F.logsigmoid(flat_pred_logits))
+        neg_cost_class = (
+            (1 - alpha) * (out_prob**gamma) * (-F.logsigmoid(-flat_pred_logits))
+        )
+        pos_cost_class = (
+            alpha * ((1 - out_prob) ** gamma) * (-F.logsigmoid(flat_pred_logits))
+        )
+        # Let target class = "dog".
+        # If the prediction is good:
+        # p(dog) = 0.9 → good
+        # p(other classes) = low → good
+        # pos_cost = small  (because p(dog) is high)
+        # neg_cost = large  (because 1 - p(dog) is small)
+        # cost = small - large = very small → GOOD MATCH
+        # If the prediction is bad:
+        # p(dog) = 0.1 → bad
+        # p(other classes) = high → bad
+        # pos_cost = large  (because p(dog) is low)
+        # neg_cost = small  (because 1 - p(dog) is high)
+        # cost = large - small = very large → BAD MATCH
+
         cost_class = pos_cost_class[:, tgt_ids] - neg_cost_class[:, tgt_ids]
 
         # Compute the L1 cost between boxes
@@ -119,13 +157,26 @@ class HungarianMatcher(nn.Module):
             # pred_masks_logits = out_masks.flatten(1)  # [P, HW]
             # tgt_masks_flat = tgt_masks.flatten(1).float()  # [T, HW]
 
-            num_points = out_masks.shape[-2] * out_masks.shape[-1] // self.mask_point_sample_ratio
+            num_points = (
+                out_masks.shape[-2]
+                * out_masks.shape[-1]
+                // self.mask_point_sample_ratio
+            )
 
             tgt_masks = tgt_masks.to(out_masks.dtype)
 
             point_coords = torch.rand(1, num_points, 2, device=out_masks.device)
-            pred_masks_logits = point_sample(out_masks.unsqueeze(1), point_coords.repeat(out_masks.shape[0], 1, 1), align_corners=False).squeeze(1)
-            tgt_masks_flat = point_sample(tgt_masks.unsqueeze(1), point_coords.repeat(tgt_masks.shape[0], 1, 1), align_corners=False, mode="nearest").squeeze(1)
+            pred_masks_logits = point_sample(
+                out_masks.unsqueeze(1),
+                point_coords.repeat(out_masks.shape[0], 1, 1),
+                align_corners=False,
+            ).squeeze(1)
+            tgt_masks_flat = point_sample(
+                tgt_masks.unsqueeze(1),
+                point_coords.repeat(tgt_masks.shape[0], 1, 1),
+                align_corners=False,
+                mode="nearest",
+            ).squeeze(1)
 
             # Binary cross-entropy with logits cost (mean over pixels), computed pairwise efficiently
             cost_mask_ce = batch_sigmoid_ce_loss(pred_masks_logits, tgt_masks_flat)
@@ -134,10 +185,20 @@ class HungarianMatcher(nn.Module):
             cost_mask_dice = batch_dice_loss(pred_masks_logits, tgt_masks_flat)
 
         # Final cost matrix
-        C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
+        C = (
+            self.cost_bbox * cost_bbox
+            + self.cost_class * cost_class
+            + self.cost_giou * cost_giou
+        )
         if masks_present:
-            C = C + self.cost_mask_ce * cost_mask_ce + self.cost_mask_dice * cost_mask_dice
-        C = C.view(bs, num_queries, -1).float().cpu()  # convert to float because bfloat16 doesn't play nicely with CPU
+            C = (
+                C
+                + self.cost_mask_ce * cost_mask_ce
+                + self.cost_mask_dice * cost_mask_dice
+            )
+        C = (
+            C.view(bs, num_queries, -1).float().cpu()
+        )  # convert to float because bfloat16 doesn't play nicely with CPU
 
         # we assume any good match will not cause NaN or Inf, so we replace them with a large value
         max_cost = C.max() if C.numel() > 0 else 0
@@ -149,15 +210,26 @@ class HungarianMatcher(nn.Module):
         C_list = C.split(g_num_queries, dim=1)
         for g_i in range(group_detr):
             C_g = C_list[g_i]
-            indices_g = [linear_sum_assignment(c[i]) for i, c in enumerate(C_g.split(sizes, -1))]
+            indices_g = [
+                linear_sum_assignment(c[i]) for i, c in enumerate(C_g.split(sizes, -1))
+            ]
             if g_i == 0:
                 indices = indices_g
             else:
                 indices = [
-                    (np.concatenate([indice1[0], indice2[0] + g_num_queries * g_i]), np.concatenate([indice1[1], indice2[1]]))
+                    (
+                        np.concatenate([indice1[0], indice2[0] + g_num_queries * g_i]),
+                        np.concatenate([indice1[1], indice2[1]]),
+                    )
                     for indice1, indice2 in zip(indices, indices_g)
                 ]
-        return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
+        return [
+            (
+                torch.as_tensor(i, dtype=torch.int64),
+                torch.as_tensor(j, dtype=torch.int64),
+            )
+            for i, j in indices
+        ]
 
 
 def build_matcher(args):
@@ -169,7 +241,8 @@ def build_matcher(args):
             focal_alpha=args.focal_alpha,
             cost_mask_ce=args.mask_ce_loss_coef,
             cost_mask_dice=args.mask_dice_loss_coef,
-            mask_point_sample_ratio=args.mask_point_sample_ratio,)
+            mask_point_sample_ratio=args.mask_point_sample_ratio,
+        )
     else:
         return HungarianMatcher(
             cost_class=args.set_cost_class,
