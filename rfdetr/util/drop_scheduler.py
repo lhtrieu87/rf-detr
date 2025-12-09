@@ -6,7 +6,11 @@
 """util for drop scheduler."""
 import numpy as np
 
-
+# niter_per_ep: number of iterations per epoch
+# The function builds a per-iteration drop-rate vector 
+# where the drop can happen all the time (standard), 
+# only at the beginning (early), or only at the end (late), 
+# optionally with linear decay in the early phase.
 def drop_scheduler(drop_rate, epochs, niter_per_ep, cutoff_epoch=0, mode='standard', schedule='constant'):
     """drop scheduler"""
     assert mode in ['standard', 'early', 'late']
